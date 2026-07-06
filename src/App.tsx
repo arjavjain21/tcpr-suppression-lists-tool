@@ -1,20 +1,23 @@
 /**
  * Main App Component
- * Clean routing with authentication and smooth transitions
+ * Professional routing with sidebar navigation
  */
 
 import { useState } from 'react'
+import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import { ToastProvider } from './contexts/ToastContext'
 import Auth from './components/Auth'
 import IntakeForm from './components/IntakeForm'
 import RecentRecords from './components/RecentRecords'
+import { Sidebar, Navbar } from './components/Navigation'
 
-type View = 'intake' | 'records'
+type View = 'intake' | 'records' | 'analytics' | 'settings'
 
 function AppContent() {
   const { user, loading } = useAuth()
   const [currentView, setCurrentView] = useState<View>('intake')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   if (loading) {
     return (
@@ -31,35 +34,45 @@ function AppContent() {
     return <Auth />
   }
 
-  const handleSubmitSuccess = () => {
-    // Form was submitted successfully, records will auto-refresh
+  const handleViewChange = (view: View) => {
+    setCurrentView(view)
   }
 
-  const handleViewRecords = () => {
-    setCurrentView('records')
-  }
-
-  const handleAddNew = () => {
-    setCurrentView('intake')
-  }
-
-  return currentView === 'records' ? (
-    <RecentRecords onAddNew={handleAddNew} />
-  ) : (
-    <IntakeForm
-      onSubmitSuccess={handleSubmitSuccess}
-      onViewRecords={handleViewRecords}
-    />
+  const layout = (
+    <div className="min-h-screen bg-gray-50">
+      <Navbar onMenuOpen={() => setSidebarOpen(true)} currentView={currentView} />
+      <Sidebar
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        currentView={currentView}
+        onViewChange={handleViewChange}
+      />
+      <main className={`transition-all duration-300 ${sidebarOpen ? 'lg:ml-64' : ''}`}>
+        {currentView === 'intake' && (
+          <IntakeForm
+            onSubmitSuccess={() => {}}
+            onViewRecords={() => setCurrentView('records')}
+          />
+        )}
+        {currentView === 'records' && (
+          <RecentRecords onAddNew={() => setCurrentView('intake')} />
+        )}
+      </main>
+    </div>
   )
+
+  return layout
 }
 
 function App() {
   return (
-    <AuthProvider>
-      <ToastProvider>
-        <AppContent />
-      </ToastProvider>
-    </AuthProvider>
+    <BrowserRouter>
+      <AuthProvider>
+        <ToastProvider>
+          <AppContent />
+        </ToastProvider>
+      </AuthProvider>
+    </BrowserRouter>
   )
 }
 

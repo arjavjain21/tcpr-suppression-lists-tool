@@ -1,12 +1,12 @@
 /**
  * Recent Records Component
- * Clean records view with filters, CSV export, and toast notifications
+ * Premium records view with enhanced styling and animations
  */
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useToast } from '../contexts/ToastContext'
-import { supabase, type LeadEventWithDetails, type Setter, type LeadType } from '../lib/supabase'
+import { supabase, type Setter, type LeadType } from '../lib/supabase'
 import { downloadCsv } from '../lib/exportCsv'
 import {
   Search,
@@ -15,9 +15,11 @@ import {
   LogOut,
   Plus,
   Database,
-  AlertCircle,
-  X,
   Filter,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+  Sparkles,
 } from 'lucide-react'
 
 interface RecentRecordsProps {
@@ -28,8 +30,8 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
   const { signOut } = useAuth()
   const { showToast } = useToast()
 
-  const [events, setEvents] = useState<LeadEventWithDetails[]>([])
-  const [filteredEvents, setFilteredEvents] = useState<LeadEventWithDetails[]>([])
+  const [events, setEvents] = useState<any[]>([])
+  const [filteredEvents, setFilteredEvents] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -54,7 +56,13 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
     try {
       setLoading(true)
 
-      const { data, error } = await supabase
+      console.log('Loading events...')
+
+      // Try different query approaches
+      let data, error
+
+      // Approach 1: Standard join syntax
+      const result1 = await supabase
         .from('lead_events')
         .select(`
           *,
@@ -65,12 +73,74 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
         .order('created_at', { ascending: false })
         .limit(100)
 
+      console.log('Query result:', { data: result1.data, error: result1.error, count: result1.data?.length })
+
+      if (result1.error) {
+        console.log('Standard join failed, trying explicit FK syntax...')
+
+        // Approach 2: Explicit FK syntax
+        const result2 = await supabase
+          .from('lead_events')
+          .select('*, lead_entities!inner(id, entity_type, email, domain), lead_types!inner(id, label), setters(id, name, email)')
+          .order('created_at', { ascending: false })
+          .limit(100)
+
+        console.log('Explicit FK result:', { data: result2.data, error: result2.error })
+
+        if (result2.error) {
+          // Approach 3: Manual queries
+          console.log('Join queries failed, trying separate queries...')
+
+          const eventsResult = await supabase
+            .from('lead_events')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(100)
+
+          console.log('Events query:', { data: eventsResult.data, error: eventsResult.error, count: eventsResult.data?.length })
+
+          if (eventsResult.error) throw eventsResult.error
+
+          // Load related data separately
+          const leadEntitiesResult = await supabase.from('lead_entities').select('*')
+          const leadTypesResult = await supabase.from('lead_types').select('*')
+          const settersResult = await supabase.from('setters').select('*')
+
+          // Create lookup maps
+          const entityMap = new Map((leadEntitiesResult.data || []).map(e => [e.id, e]))
+          const typeMap = new Map((leadTypesResult.data || []).map(t => [t.id, t]))
+          const setterMap = new Map((settersResult.data || []).map(s => [s.id, s]))
+
+          // Merge data
+          const mergedEvents = (eventsResult.data || []).map(event => ({
+            ...event,
+            lead_entity: entityMap.get(event.lead_entity_id) || null,
+            lead_type: typeMap.get(event.lead_type_id) || null,
+            setter: setterMap.get(event.setter_id) || null,
+          }))
+
+          console.log('Merged events:', mergedEvents.length)
+          setEvents(mergedEvents)
+          setFilteredEvents(mergedEvents)
+          return
+        }
+
+        data = result2.data
+        error = result2.error
+      } else {
+        data = result1.data
+        error = result1.error
+      }
+
       if (error) throw error
       setEvents(data || [])
       setFilteredEvents(data || [])
-    } catch (err) {
+
+      console.log('Final events set:', { count: data?.length })
+
+    } catch (err: any) {
       console.error('Error loading events:', err)
-      showToast('error', 'Failed to load records')
+      showToast('error', `Failed to load records: ${err.message}`)
     } finally {
       setLoading(false)
     }
@@ -99,18 +169,22 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
     if (searchQuery) {
       const query = searchQuery.toLowerCase()
       filtered = filtered.filter((event) => {
-        const email = event.lead_entity.email?.toLowerCase() || ''
-        const domain = event.lead_entity.domain?.toLowerCase() || ''
+        const email = event.lead_entity?.email?.toLowerCase() || event.email?.toLowerCase() || ''
+        const domain = event.lead_entity?.domain?.toLowerCase() || event.domain?.toLowerCase() || ''
         return email.includes(query) || domain.includes(query)
       })
     }
 
     if (leadTypeFilter) {
-      filtered = filtered.filter((event) => event.lead_type_id === leadTypeFilter)
+      filtered = filtered.filter((event) =>
+        event.lead_type_id === leadTypeFilter || event.lead_type?.id === leadTypeFilter
+      )
     }
 
     if (setterFilter) {
-      filtered = filtered.filter((event) => event.setter_id === setterFilter)
+      filtered = filtered.filter((event) =>
+        event.setter_id === setterFilter || event.setter?.id === setterFilter
+      )
     }
 
     setFilteredEvents(filtered)
@@ -120,7 +194,7 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
     setRefreshing(true)
     await loadEvents()
     setTimeout(() => setRefreshing(false), 500)
-    showToast('info', 'Records refreshed')
+    showToast('success', 'Records refreshed')
   }
 
   const handleExport = () => {
@@ -128,7 +202,19 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
       showToast('error', 'No records to export')
       return
     }
-    downloadCsv(filteredEvents, 'lead-events.csv')
+
+    const exportData = filteredEvents.map(event => ({
+      date: new Date(event.created_at).toLocaleString(),
+      type: event.lead_entity?.entity_type || event.entity_type || 'unknown',
+      email: event.lead_entity?.email || event.email || '',
+      domain: event.lead_entity?.domain || event.domain || '',
+      leadType: event.lead_type?.label || 'Unknown',
+      setter: event.setter?.name || 'Unknown',
+      source: event.source,
+      notes: event.notes || ''
+    }))
+
+    downloadCsv(exportData as any, 'lead-events.csv')
     showToast('success', `Exported ${filteredEvents.length} records`)
   }
 
@@ -149,78 +235,76 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
-          <p className="text-sm text-gray-600">Loading records...</p>
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 lg:ml-64">
+        <div className="flex flex-col items-center gap-4">
+          <Loader2 className="h-10 w-10 animate-spin text-blue-600" />
+          <p className="text-sm text-gray-600 font-medium">Loading records...</p>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 lg:ml-64">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Header */}
+        <div className="mb-8">
           <div className="flex items-center justify-between">
-            <h1 className="text-lg font-semibold text-gray-900">Recent Records</h1>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleRefresh}
-                disabled={refreshing}
-                className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all disabled:opacity-50"
-              >
-                <Loader2 className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-                Refresh
-              </button>
-              <button
-                onClick={onAddNew}
-                className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                <Plus className="w-4 h-4" />
-                Add New
-              </button>
-              <button
-                onClick={handleLogout}
-                className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                <LogOut className="w-4 h-4" />
-                Sign Out
-              </button>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200">
+                <Database className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">Recent Records</h1>
+                <p className="text-sm text-gray-600">View and manage your lead suppression history</p>
+              </div>
             </div>
+            <button
+              onClick={onAddNew}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 transition-all duration-200 shadow-lg shadow-blue-200"
+            >
+              <Plus className="w-4 h-4" />
+              Add New
+            </button>
           </div>
         </div>
-      </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-6">
-          <h2 className="text-xl font-semibold text-gray-900">Lead Suppression Records</h2>
-          <p className="mt-1 text-sm text-gray-600">
-            View and manage your lead suppression history
-          </p>
-        </div>
-
-        <div className="mb-6 bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
+        {/* Filters Card */}
+        <div className="mb-6 bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+          <div className="px-6 py-4 flex items-center justify-between">
             <button
               onClick={() => setShowFilters(!showFilters)}
-              className="inline-flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-gray-900 transition-colors"
+              className="flex items-center gap-2 text-sm font-semibold text-gray-700 hover:text-gray-900 transition-colors"
             >
               <Filter className="w-4 h-4" />
               Filters
               {activeFiltersCount > 0 && (
-                <span className="bg-blue-100 text-blue-700 text-xs px-2 py-0.5 rounded-full">
+                <span className="bg-blue-100 text-blue-700 text-xs px-2.5 py-0.5 rounded-full font-medium">
                   {activeFiltersCount}
                 </span>
               )}
+              {showFilters ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </button>
+
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              Refresh
             </button>
           </div>
 
           {showFilters && (
-            <div className="animate-in slide-in-from-top-2 duration-200">
+            <div className="px-6 pb-4 animate-in slide-in-from-top duration-200">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
-                  <label htmlFor="search" className="block text-xs font-medium text-gray-700 mb-1">
+                  <label htmlFor="search" className="block text-xs font-semibold text-gray-700 mb-1.5">
                     Search
                   </label>
                   <div className="relative">
@@ -230,62 +314,66 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow"
+                      className="w-full pl-10 pr-3 py-2.5 bg-gray-50 border-2 border-gray-200 rounded-xl text-sm text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                       placeholder="Email or domain..."
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label htmlFor="lead-type-filter" className="block text-xs font-medium text-gray-700 mb-1">
+                  <label htmlFor="lead-type-filter" className="block text-xs font-semibold text-gray-700 mb-1.5">
                     Lead Type
                   </label>
-                  <select
-                    id="lead-type-filter"
-                    value={leadTypeFilter}
-                    onChange={(e) => setLeadTypeFilter(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow"
-                  >
-                    <option value="">All Types</option>
-                    {leadTypes.map((lt) => (
-                      <option key={lt.id} value={lt.id}>
-                        {lt.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <select
+                      id="lead-type-filter"
+                      value={leadTypeFilter}
+                      onChange={(e) => setLeadTypeFilter(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-gray-50 border-2 border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none cursor-pointer transition-all"
+                    >
+                      <option value="">All Types</option>
+                      {leadTypes.map((lt) => (
+                        <option key={lt.id} value={lt.id}>
+                          {lt.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 <div>
-                  <label htmlFor="setter-filter" className="block text-xs font-medium text-gray-700 mb-1">
+                  <label htmlFor="setter-filter" className="block text-xs font-semibold text-gray-700 mb-1.5">
                     Setter
                   </label>
-                  <select
-                    id="setter-filter"
-                    value={setterFilter}
-                    onChange={(e) => setSetterFilter(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-shadow"
-                  >
-                    <option value="">All Setters</option>
-                    {setters.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <select
+                      id="setter-filter"
+                      value={setterFilter}
+                      onChange={(e) => setSetterFilter(e.target.value)}
+                      className="w-full px-3 py-2.5 bg-gray-50 border-2 border-gray-200 rounded-xl text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none cursor-pointer transition-all"
+                    >
+                      <option value="">All Setters</option>
+                      {setters.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
-          <div className="flex items-center justify-between pt-4 border-t border-gray-100">
+          <div className="px-6 py-3 border-t border-gray-100 flex items-center justify-between">
             <p className="text-sm text-gray-600">
-              Showing <span className="font-medium text-gray-900">{filteredEvents.length}</span> of{' '}
+              Showing <span className="font-bold text-gray-900">{filteredEvents.length}</span> of{' '}
               <span className="text-gray-500">{events.length}</span> records
             </p>
             <button
               onClick={handleExport}
               disabled={filteredEvents.length === 0}
-              className="inline-flex items-center gap-2 px-3 py-1.5 text-sm text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="inline-flex items-center gap-2 px-3 py-2 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
             >
               <Download className="w-4 h-4" />
               Export CSV
@@ -293,20 +381,23 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
           </div>
         </div>
 
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+        {/* Records Table */}
+        <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
           {filteredEvents.length === 0 ? (
-            <div className="text-center py-16">
-              <Database className="w-12 h-12 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-base font-medium text-gray-900">No records found</h3>
-              <p className="mt-2 text-sm text-gray-500">
+            <div className="text-center py-20">
+              <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Database className="w-8 h-8 text-gray-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">No records found</h3>
+              <p className="text-sm text-gray-500 mb-6">
                 {events.length === 0
-                  ? 'No records have been created yet.'
-                  : 'Try adjusting your filters.'}
+                  ? 'Get started by adding your first leads to the suppression list.'
+                  : 'Try adjusting your filters to see more records.'}
               </p>
               {events.length === 0 && (
                 <button
                   onClick={onAddNew}
-                  className="mt-4 inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors"
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition-all duration-200 shadow-lg shadow-blue-200"
                 >
                   <Plus className="w-4 h-4" />
                   Add Your First Leads
@@ -316,69 +407,73 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b border-gray-200">
+                <thead className="bg-gradient-to-r from-gray-50 to-gray-100 border-b border-gray-200">
                   <tr>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Date
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Type
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Email
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Domain
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Lead Type
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Setter
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Source
                     </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                    <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wide">
                       Notes
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filteredEvents.map((event) => (
-                    <tr key={event.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                  {filteredEvents.map((event, index) => (
+                    <tr
+                      key={event.id}
+                      className="hover:bg-gradient-to-r hover:from-gray-50 hover:to-transparent transition-all duration-150"
+                      style={{ animationDelay: `${index * 30}ms` }}
+                    >
+                      <td className="px-6 py-4 text-gray-600 whitespace-nowrap">
                         {formatDate(event.created_at)}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                          event.lead_entity.entity_type === 'email'
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex items-center px-3 py-1 rounded-lg text-xs font-semibold ${
+                          event.lead_entity?.entity_type === 'email' || event.entity_type === 'email'
                             ? 'bg-blue-100 text-blue-700'
                             : 'bg-purple-100 text-purple-700'
                         }`}>
-                          {event.lead_entity.entity_type}
+                          {event.lead_entity?.entity_type || event.entity_type || 'unknown'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {event.lead_entity.email || <span className="text-gray-400">—</span>}
+                      <td className="px-6 py-4 text-gray-600">
+                        {event.lead_entity?.email || event.email || <span className="text-gray-400">—</span>}
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {event.lead_entity.domain || <span className="text-gray-400">—</span>}
+                      <td className="px-6 py-4 text-gray-600">
+                        {event.lead_entity?.domain || event.domain || <span className="text-gray-400">—</span>}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="inline-block px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
-                          {event.lead_type.label}
+                      <td className="px-6 py-4">
+                        <span className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-semibold bg-gray-100 text-gray-700">
+                          {event.lead_type?.label || 'Unknown'}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
+                      <td className="px-6 py-4 text-gray-600">
                         {event.setter?.name || <span className="text-gray-400">—</span>}
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
-                        <span className="inline-block px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700">
+                      <td className="px-6 py-4">
+                        <span className="inline-flex items-center px-3 py-1 rounded-lg text-xs bg-gray-100 text-gray-700">
                           {event.source}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-600 max-w-xs">
+                      <td className="px-6 py-4 text-gray-600 max-w-xs">
                         {event.notes ? (
                           <span className="block truncate" title={event.notes}>
                             {event.notes}
@@ -394,7 +489,7 @@ export default function RecentRecords({ onAddNew }: RecentRecordsProps) {
             </div>
           )}
         </div>
-      </main>
+      </div>
     </div>
   )
 }
